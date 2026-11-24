@@ -135,9 +135,12 @@ class Frame:
         x0, y0, x1, y1 = box
         return self.bgr[max(0, y0):min(SIZE[1], max(0, y1)), max(0, x0):min(SIZE[0], max(0, x1))]
 
-    def match(self, name: str, box: Box, threshold: float = 0.86, *, shared: bool = False) -> TemplateMatch | None:
+    def match(self, name: str, box: Box, threshold: float = 0.86, *, shared: bool = False,
+              top_rows: int | None = None) -> TemplateMatch | None:
         area = self.crop(box)
         needle = _template(self.templates / ("" if shared else "tribute_loop") / f"{name}.png")
+        if top_rows is not None:
+            needle = needle[:top_rows]
         height, width = needle.shape[:2]
         if area.shape[0] < height or area.shape[1] < width:
             return None
@@ -382,7 +385,12 @@ class Frame:
     def profile_close(self) -> Point | None:
         if self.profile() is None:
             return None
-        match = self.match("profile_close_button", (1150, 25, 1280, 128), 0.88, shared=True)
+        region = (1150, 25, 1280, 128)
+        match = self.match("profile_close_button", region, 0.88, shared=True)
+        if match is None:
+            # The global announcement strip can overlap just the bottom of
+            # the X. Recognize and click the visible part, above the strip.
+            match = self.match("profile_close_button", region, 0.94, shared=True, top_rows=34)
         return match.center if match else None
 
     def profile_captain(self) -> str | None:

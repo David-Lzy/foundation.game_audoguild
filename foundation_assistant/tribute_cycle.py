@@ -17,7 +17,9 @@ import win32event
 import win32gui
 
 from foundation_assistant.games import GameProfile, get_profile
-from foundation_assistant.tribute_loop import AP_COST, Desktop, RetryBeforeInput, Stop, TributeLoop, prepare_window, single_instance
+from foundation_assistant.tribute_loop import (
+    AP_COST, Desktop, RallySetupNotOpened, RetryBeforeInput, Stop, TributeLoop, prepare_window, single_instance,
+)
 from foundation_assistant.tribute_loop_vision import Frame, Point, TextReader
 from foundation_assistant.vision.screenshot import capture_window
 from foundation_assistant.win.launch import launch_game
@@ -352,21 +354,35 @@ class CycleDesktop(Desktop):
 class LiveCycleGame:
     def __init__(self, loop: TributeLoop, emit: Event) -> None:
         self.loop, self.emit = loop, emit
+        self.last_ap: AP | None = None
 
     def read_action_points(self) -> AP:
-        return self.loop.read_action_points()
+        self.last_ap = self.loop.read_action_points()
+        return self.last_ap
 
     def refill(self, allow_use: Callable[[], bool]) -> bool:
         return self.loop.refill(preview=False, allow_use=allow_use)
 
     def rally(self, options: CycleOptions) -> str:
-        before = self.loop.wait("提交前的星图维修提示基线", Frame.repair_view)
-        sent = self.loop.start(options.level, preview=False)
-        if sent is None:
-            raise CycleError("not_submitted")
-        self.emit("round_submitted", repair_already_visible=before.button is not None)
-        return self.loop.wait_battle_end(options.captain, options.level, sent, options.result_timeout,
-                                         repair_already_visible=before.button is not None)
+        for attempt in range(2):
+            before = self.loop.wait("提交前的星图维修提示基线", Frame.repair_view)
+            try:
+                sent = self.loop.start(options.level, preview=False)
+            except RallySetupNotOpened:
+                expected = self.last_ap
+                if attempt or expected is None:
+                    raise
+                observed = self.read_action_points()
+                if observed != expected:
+                    raise CycleError("setup_retry_ap_changed", f"AP: {expected} → {observed}") from None
+                self.emit("setup_retry", ap=observed[0], capacity=observed[1])
+                continue
+            if sent is None:
+                raise CycleError("not_submitted")
+            self.emit("round_submitted", repair_already_visible=before.button is not None)
+            return self.loop.wait_battle_end(options.captain, options.level, sent, options.result_timeout,
+                                             repair_already_visible=before.button is not None)
+        raise AssertionError("unreachable")
 
     def repair(self) -> bool:
         return self.loop.repair_fleet()
@@ -394,6 +410,10 @@ def _live(options: CycleOptions, profile_name: str, emit: Event, owner_pid: int 
         emit("window_ready")
         desktop = CycleDesktop(profile, window, TextReader(), owner=owner, emit=emit)
         loop = TributeLoop(desktop, log=lambda message: emit("detail", detail=message))
+        if desktop.frame().profile() is not None:
+            # A safe stop during an AP read can leave the profile open.
+            # Only close the positively identified panel before a new run.
+            loop.step("启动前关闭已识别的个人资料页", Frame.profile_close, timeout=25)
         loop.wait("已登录的星图（游戏文字须为繁体中文或 English）", Frame.map_search, 25)
         return CycleRunner(LiveCycleGame(loop, emit), options, emit=emit,
                            finish_requested=lambda: desktop.finish_requested).run()

@@ -268,6 +268,24 @@ def test_moving_target_waits_for_two_matching_positions_before_clicking():
     assert clicks == [(965, 620)]
 
 
+@pytest.mark.parametrize("is_map", [True, False])
+def test_only_visible_map_is_retryable_if_setup_did_not_open(is_map):
+    class Screen:
+        def frame(self):
+            return self
+
+        def setup_rally(self):
+            return None
+
+        def repair_view(self):
+            return object() if is_map else None
+
+    loop = mod.TributeLoop(Screen(), clock=lambda: 0)
+    with pytest.raises(mod.Stop) as error:
+        loop.wait_for_rally_setup(timeout=0)
+    assert isinstance(error.value, mod.RallySetupNotOpened) is is_map
+
+
 def test_1080p_required_and_button_templates_are_packaged():
     profile = get_profile()
     with pytest.raises(ValueError, match="1920×1080"):
@@ -298,6 +316,21 @@ def test_mail_back_remains_recognizable_when_tab_word_is_covered(monkeypatch):
     monkeypatch.setattr(frame, "line", lambda box: "郵件" if box[1] == 5 else "巡")
     assert frame.mail_back() is not None
     assert frame.mail() is None
+
+
+def test_profile_x_can_be_closed_above_an_announcement_covering_its_bottom():
+    assets = get_profile().templates_dir
+    image = Image.new("RGB", SIZE, "#132a33")
+    for name, position in (("tribute_loop/profile_meter", (693, 27)),
+                           ("tribute_loop/profile_plus", (828, 27)), ("profile_close_button", (1192, 48))):
+        with Image.open(assets / f"{name}.png") as template:
+            image.paste(template, position)
+    image.paste("#bb8c2e", (580, 82, 1400, 129))
+    frame = Frame(image, assets)
+    assert frame.match("profile_close_button", (1150, 25, 1280, 128), 0.88, shared=True) is None
+    assert frame.profile_close() == (1216, 65)
+    image.paste("#bb8c2e", (580, 46, 1400, 129))
+    assert Frame(image, assets).profile_close() is None
 
 
 def test_prepare_window_resizes_and_reads_back_actual_client(monkeypatch):

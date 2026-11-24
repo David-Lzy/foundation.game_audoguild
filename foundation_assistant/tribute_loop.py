@@ -34,6 +34,10 @@ class RetryBeforeInput(RuntimeError):
     """The target must be re-read; no mouse-down was sent for this attempt."""
 
 
+class RallySetupNotOpened(Stop):
+    """The red navigation button returned to the map; no final input was attempted."""
+
+
 class LoopIO(Protocol):
     def frame(self) -> Frame: ...
     def pause(self, seconds: float) -> None: ...
@@ -263,8 +267,23 @@ class TributeLoop:
             self.log("预览已到目标卡片，没点红色/黄色集结，也没消耗体力。")
             return None
         self.step(f"{level} 级贡品船的红色集结（30 体力）", target, timeout=24, stabilize=True)
+        self.wait_for_rally_setup()
         self.step("舰队评分页的黄色集结（30 体力）", Frame.setup_rally)
         return self.clock()
+
+    def wait_for_rally_setup(self, timeout: float = 10) -> None:
+        # A target can move or disappear between choosing it and the setup
+        # transition. Only the clearly visible star map is a recoverable state.
+        deadline = self.clock() + timeout
+        while True:
+            frame = self.io.frame()
+            if frame.setup_rally() is not None:
+                return
+            if self.clock() >= deadline:
+                if frame.repair_view() is not None:
+                    raise RallySetupNotOpened("点了红色集结后仍在星图，没点黄色确认。")
+                raise Stop("未确认舰队评分页，当前画面不明，没点黄色确认。")
+            self.io.pause(min(0.35, max(0, deadline - self.clock())))
 
     def result(self, captain: str, level: int, sent: float, timeout: int) -> None:
         self.log("已点击黄色集结；至少等 180 秒，再核对本轮胜利战报。")

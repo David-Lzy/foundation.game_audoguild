@@ -8,6 +8,7 @@ import pytest
 
 from foundation_assistant import tribute_cycle as mod
 from foundation_assistant.tribute_loop import Stop
+from foundation_assistant.tribute_loop_vision import RepairView
 from foundation_assistant.tribute_ui import params
 
 
@@ -172,6 +173,42 @@ def test_unconfirmed_result_stops_the_batch_without_refill_or_more_clicks(monkey
     with pytest.raises(Stop, match="report not verified"):
         simulate(game)
     assert game.actions == ["rally"]
+
+
+@pytest.mark.parametrize("readback", [(270, 300), (240, 300)])
+def test_preconfirm_retry_requires_identical_ap_readback(readback):
+    class LoopProbe:
+        tries = 0
+        readings = iter([(270, 300), readback])
+
+        def read_action_points(self):
+            return next(self.readings)
+
+        def wait(self, *_):
+            return RepairView(None)
+
+        def start(self, _level, *, preview):
+            assert not preview
+            self.tries += 1
+            if self.tries == 1:
+                raise mod.RallySetupNotOpened("returned to star map")
+            return 123
+
+        def wait_battle_end(self, *_args, **_kw):
+            return "victory_mail"
+
+    events = []
+    loop = LoopProbe()
+    game = mod.LiveCycleGame(loop, lambda event, **_: events.append(event))
+    game.read_action_points()
+    if readback == (270, 300):
+        assert game.rally(mod.CycleOptions("Test captain")) == "victory_mail"
+        assert loop.tries == 2 and events == ["setup_retry", "round_submitted"]
+    else:
+        with pytest.raises(mod.CycleError) as error:
+            game.rally(mod.CycleOptions("Test captain"))
+        assert error.value.code == "setup_retry_ap_changed"
+        assert loop.tries == 1 and not events
 
 
 def test_unknown_cap_blocks_resource_actions():
