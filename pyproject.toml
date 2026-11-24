@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "foundation-tribute-runner"
+version = "0.1.0"
+description = "Bilingual Windows Tribute Vessel runner for Foundation: Galactic Frontier"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+  "numpy>=1.26",
+  "opencv-python>=4.8",
+  "Pillow>=10.0",
+  "mss>=10.0",
+  "pywin32>=306; sys_platform == 'win32'",
+  "rapidocr>=3.8.4",
+  "onnxruntime>=1.18",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+foundation-assistant = "foundation_assistant.cli:main"
+foundation-assistant-admin = "foundation_assistant.cli:admin_main"
+
+[tool.setuptools.packages.find]
+include = ["foundation_assistant*"]
+
+[tool.setuptools.package-data]
+foundation_assistant = ["games/**/*.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

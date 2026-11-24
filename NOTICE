@@ -1,0 +1,25 @@
+FoundationAssistant
+
+FoundationAssistant is distributed under the GNU General Public License
+version 3 or later.
+
+This project intentionally follows and may directly port generic automation
+implementation ideas and code from:
+
+- March7thAssistant
+  Upstream: https://github.com/moesnow/March7thAssistant
+  Source revision used for the initial port planning:
+  b43effef32afc2c32e090c13cb04fdd2f5227551
+  License: GNU General Public License version 3
+
+Porting boundary:
+
+- In scope: reusable Windows automation infrastructure such as Unity window
+  lookup, client-area screenshots, input backend abstraction, template/OCR
+  element finding, screen graph routing, and task orchestration structure.
+- Out of scope: March7thAssistant game assets, Honkai Star Rail screen
+  definitions, launcher/updater UI, cloud game integrations, and game-specific
+  task behavior.
+
+Foundation Galactic Frontier templates, profile data, screen definitions, and
+workflow tasks are project-local work for FoundationAssistant.
