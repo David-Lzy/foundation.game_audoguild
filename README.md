@@ -6,9 +6,9 @@ A Windows tool for the **Traditional Chinese and English** clients of Foundation
 
 ## 下载 / Download
 
-在 [GitHub Releases](https://github.com/David-Lzy/foundation.game_audoguild/releases/latest) 下载 `FoundationTributeRunner-*-win-x64-setup.exe`。这是 Windows 10/11 x64 的单文件离线安装包，内含 Python 运行时和 OCR 模型。安装后从开始菜单打开 **Foundation Tribute Runner**。安装需要管理员确认；启动界面不会操作游戏。
+在 [GitHub Releases](https://github.com/David-Lzy/foundation.game_audoguild/releases/latest) 下载 `FoundationTributeRunner-*-win-x64-setup.exe`。这是 Windows 10/11 x64 的单文件离线安装包，内含 Python 运行时和 OCR 模型。可以选择安装路径，并按需勾选「创建桌面快捷方式」（新安装默认不勾选）。也可从开始菜单打开 **Foundation Tribute Runner**。安装需要管理员确认；启动界面不会操作游戏。
 
-Download the single Windows x64 setup EXE from [GitHub Releases](https://github.com/David-Lzy/foundation.game_audoguild/releases/latest). It bundles Python and the OCR models. After installation, launch **Foundation Tribute Runner** from the Start menu.
+Download the single Windows x64 setup EXE from [GitHub Releases](https://github.com/David-Lzy/foundation.game_audoguild/releases/latest). It bundles Python and the OCR models. Choose the install folder and optionally create a desktop shortcut. The Start menu shortcut is always installed.
 
 安装包目前没有代码签名。可用 `Get-FileHash -Algorithm SHA256` 与 Releases 的 `SHA256SUMS.txt` 核对下载。
 

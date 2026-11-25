@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = "FoundationTributeRunner"
 
 
-def removal_list(payload: Path) -> tuple[str, int]:
+def removal_list(payload: Path) -> tuple[str, int, int]:
     entries = list(payload.rglob("*"))
     files = sorted(path for path in entries if path.is_file())
     folders = sorted((path for path in entries if path.is_dir()), key=lambda path: (-len(path.parts), path))
@@ -30,7 +30,17 @@ def removal_list(payload: Path) -> tuple[str, int]:
 
     deletes = [f"  Delete {installed_path(path)}" for path in files if path != payload / f"{APP}.exe"]
     deletes.extend(f"  RMDir {installed_path(path)}" for path in folders)
-    return "\n".join(deletes) + "\n", (size + 1023) // 1024
+    # Leave room for the longest payload entry without requiring Windows long-path settings.
+    longest = max(len(str(path.relative_to(payload)).encode("utf-16-le")) // 2 for path in entries)
+    return "\n".join(deletes) + "\n", (size + 1023) // 1024, 245 - longest
+
+
+def build_location_helper(output: Path) -> None:
+    compiler = Path(os.environ["SystemRoot"]) / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
+    if not compiler.is_file():
+        raise FileNotFoundError(f"The Windows .NET Framework C# compiler is required: {compiler}")
+    subprocess.run([str(compiler), "/nologo", "/warnaserror+", "/optimize+", "/target:exe", "/codepage:65001",
+                    f"/out:{output}", str(ROOT / "tools" / "SetupLocation.cs")], cwd=ROOT, check=True)
 
 
 def main() -> int:
@@ -48,9 +58,12 @@ def main() -> int:
     dist = ROOT / "dist"
     payload = dist / APP
     cache = build / "pyinstaller-cache"
-    for directory in (dist, payload, build, build / "tribute-runner", cache):
+    location_helper = build / "SetupLocation.exe"
+    for directory in (dist, payload, build, build / "tribute-runner", cache, location_helper):
         if directory.resolve() != directory:
             parser.error(f"Refusing to overwrite a redirected path: {directory}")
+    build.mkdir(parents=True, exist_ok=True)
+    build_location_helper(location_helper)
     env = os.environ.copy()
     env["PYINSTALLER_CONFIG_DIR"] = str(cache)
     conda_bin = Path(sys.base_prefix) / "Library" / "bin"
@@ -62,11 +75,13 @@ def main() -> int:
                     str(ROOT / "tools" / "tribute-runner.spec")], cwd=ROOT, env=env, check=True)
     output = dist / f"{APP}-{version}-win-x64-setup.exe"
     manifest = build / "remove-files.nsh"
-    commands, kib = removal_list(payload)
+    commands, kib, max_path = removal_list(payload)
     manifest.write_text(commands, encoding="utf-8-sig")
 
-    subprocess.run([str(makensis), "/V3", "/WX", f"/DAPP_VERSION={version}", f"/DOUTPUT_EXE={output}",
+    subprocess.run([str(makensis), "/V3", "/WX", "/INPUTCHARSET", "UTF8",
+                    f"/DAPP_VERSION={version}", f"/DOUTPUT_EXE={output}",
                     f"/DPAYLOAD_DIR={payload}", f"/DREMOVAL_LIST={manifest}", f"/DPAYLOAD_KIB={kib}",
+                    f"/DLOCATION_HELPER={location_helper}", f"/DMAX_INSTALL_PATH={max_path}",
                     str(ROOT / "tools" / "tribute-setup.nsi")], cwd=ROOT, check=True)
     with output.open("rb") as stream:
         sha256 = file_digest(stream, "sha256").hexdigest()
