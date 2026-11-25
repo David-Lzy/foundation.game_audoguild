@@ -1,0 +1,10 @@
+# Windows x64 / Python 3.14; tested release-build toolchain.
+mss==10.2.0
+numpy==2.5.5
+onnxruntime==1.32.0
+opencv-python-headless==5.1.0.95
+Pillow==13.0.0
+pywin32==312
+rapidocr==3.10.0
+PyInstaller==6.22.3
+pyinstaller-hooks-contrib==2026.10

@@ -34,6 +34,14 @@ class RetryBeforeInput(RuntimeError):
     """The target must be re-read; no mouse-down was sent for this attempt."""
 
 
+class ObservationTimeout(Stop):
+    """A verified UI control or state did not appear before its deadline."""
+
+
+class RallyTargetNotFound(Stop):
+    """No red Rally input was sent, and the game is still on the map."""
+
+
 class RallySetupNotOpened(Stop):
     """The red navigation button returned to the map; no final input was attempted."""
 
@@ -175,7 +183,7 @@ class TributeLoop:
             if found is not None:
                 return found
             if self.clock() >= deadline:
-                raise Stop(f"没有确认到「{label}」，已停止，不盲点或重试提交。")
+                raise ObservationTimeout(f"没有确认到「{label}」，已停止，不盲点或重试提交。")
             self.io.pause(min(0.35, max(0, deadline - self.clock())))
 
     def step(self, label: str, check: Callable[[Frame], Point | None], *, timeout: float = 10,
@@ -266,7 +274,14 @@ class TributeLoop:
             self.wait(f"{level} 级贡品船与红色集结", target, 24)
             self.log("预览已到目标卡片，没点红色/黄色集结，也没消耗体力。")
             return None
-        self.step(f"{level} 级贡品船的红色集结（30 体力）", target, timeout=24, stabilize=True)
+        try:
+            self.step(f"{level} 级贡品船的红色集结（30 体力）", target, timeout=24, stabilize=True)
+        except ObservationTimeout:
+            # The timeout occurred before mouse-down. A search may select
+            # a moving/despawned target. Never recover over an unknown page.
+            if self.io.frame().repair_view() is not None:
+                raise RallyTargetNotFound(f"搜寻后未确认到 {level} 级红色集结，仍在星图，未提交。") from None
+            raise
         self.wait_for_rally_setup()
         self.step("舰队评分页的黄色集结（30 体力）", Frame.setup_rally)
         return self.clock()
@@ -334,16 +349,12 @@ class TributeLoop:
         raise Stop("结算超时：没有本轮新维修提示，也没有可确认的新胜利战报。不会发下一轮。")
 
     def repair_fleet(self) -> bool:
-        """Click the normal gold quick-repair control at most once and verify it clears."""
-        def button(frame: Frame) -> Point | None:
-            view = frame.repair_view()
-            return view.button if view is not None else None
-
+        """Verify the gold wrench clears; allow one retry only if nothing changed."""
         deadline = self.clock() + 3
         while True:
             view = self.io.frame().repair_view()
             if view is not None and view.button is not None:
-                self.step("舰队栏金色快捷维修", button, timeout=3)
+                original = view.button
                 break
             if self.clock() >= deadline:
                 if view is not None:
@@ -351,19 +362,62 @@ class TributeLoop:
                 raise Stop("未核对到可操作星图，没点击维修。")
             self.io.pause(min(0.35, max(0, deadline - self.clock())))
 
-        def cleared(frame: Frame) -> Frame | None:
+        def same_button(frame: Frame) -> Point | None:
             view = frame.repair_view()
-            return frame if view is not None and view.button is None else None
+            point = view.button if view is not None else None
+            return point if point is not None and math.dist(point, original) <= 8 else None
 
-        self.io.pause(0.3)
-        self.wait("快捷维修后，星图上的扳手提示消失", cleared, 8)
-        self.io.pause(0.4)
-        frame = self.wait("维修提示保持清除", cleared, 3)
-        if frame.quick_repair_toast():
-            self.log("已读到快捷维修消耗维修模组的提示。")
-        else:
-            self.log("已核对星图上的快捷维修按钮消失。")
+        self.step("舰队栏金色快捷维修", same_button, timeout=3)
+        self.log("已发送第 1 次快捷维修点击，等待游戏反馈。")
+        if self._confirm_quick_repair(original):
+            return True
+
+        def retry_button(frame: Frame) -> Point | None:
+            point = same_button(frame)
+            if point is None or frame.quick_repair_toast():
+                raise Stop("重试前画面已变化或出现维修反馈，未再次点击。")
+            return point
+
+        self.log("首次点击未确认生效，原扳手仍可点且未见维修反馈；重试一次。")
+        self.step("舰队栏金色快捷维修（重试一次）", retry_button, timeout=3)
+        self.log("已发送第 2 次快捷维修点击，不再重复点击。")
+        if not self._confirm_quick_repair(original):
+            raise Stop("快捷维修已点两次，仍没确认到扳手提示消失；已停止。")
         return True
+
+    def _confirm_quick_repair(self, original: Point) -> bool:
+        """True means cleared; False means unchanged and eligible for one more click."""
+        self.io.pause(0.3)
+        deadline = self.clock() + 8
+        clear_since = None
+        changed = False
+        feedback = False
+        while True:
+            frame = self.io.frame()
+            view = frame.repair_view()
+            now = self.clock()
+            if view is not None and view.button is None:
+                changed = True
+                if clear_since is None:
+                    clear_since = now
+                elif now - clear_since >= 0.4:
+                    if feedback or frame.quick_repair_toast():
+                        self.log("已读到快捷维修消耗维修模组的提示。")
+                    else:
+                        self.log("已核对星图上的快捷维修按钮消失。")
+                    return True
+            else:
+                clear_since = None
+                if view is None or math.dist(view.button, original) > 8:
+                    changed = True
+                if not changed and not feedback:
+                    feedback = frame.quick_repair_toast()
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                if feedback or changed:
+                    raise Stop("维修后画面有变化或已出现维修反馈，但没确认到扳手提示消失；不会重试。")
+                return False
+            self.io.pause(min(0.35, remaining))
 
     def open_profile(self) -> None:
         if self.io.frame().profile() is None:

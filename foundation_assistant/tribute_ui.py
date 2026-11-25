@@ -1,4 +1,4 @@
-"""Small bilingual Windows launcher for the guarded Tribute cycle."""
+"""Small multilingual Windows launcher for the guarded Tribute cycle."""
 from __future__ import annotations
 
 import argparse
@@ -7,17 +7,19 @@ import os
 from pathlib import Path
 from queue import Empty, SimpleQueue
 import subprocess
-import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
 from uuid import uuid4
 
+from foundation_assistant.launcher_locale import (
+    ENGLISH, LANGUAGES, LANGUAGE_LABELS, TRADITIONAL, launcher_language, traditional_text, windows_display_language,
+)
 from foundation_assistant.paths import PROJECT_DIR, RUNS_DIR
 from foundation_assistant.tribute_cycle import (
     DEFAULT_BATCH, DEFAULT_TIMEOUT, MAX_BATCH, MAX_TOTAL_RALLIES, MIN_RESULT_TIMEOUT, CycleError, CycleOptions,
 )
-from foundation_assistant.win.admin import is_user_admin, run_as_admin_and_wait
+from foundation_assistant.win.admin import application_command, is_user_admin, run_as_admin_and_wait
 from foundation_assistant.win.window import ensure_dpi_awareness
 
 
@@ -96,8 +98,12 @@ TEXT = {
     "round_started": ("第 {batch} 批 · 第 {number}/{size} 次 · {level} 级", "Batch {batch} · rally {number}/{size} · Lv. {level}"),
     "setup_retry": ("未点黄色确认，体力仍是 {ap}/{capacity}；重新搜索一次。",
                     "No yellow confirmation sent, and AP is still {ap}/{capacity}; searching once more."),
-    "setup_retry_ap_changed": ("集结确认页未出现，且体力读数变了；已停，未重试。",
-                               "The confirmation page did not open and AP changed; stopped without retrying."),
+    "target_retry": ("没确认到红色集结，仍在星图且体力是 {ap}/{capacity}；重新搜索一次。",
+                     "Red Rally not verified; on the map with unchanged AP ({ap}/{capacity}). Searching once more."),
+    "target_not_ready": ("重新搜寻后仍未确认到红色集结；已停，未提交本次集结。",
+                         "Red Rally still not verified after searching again; no rally was submitted."),
+    "setup_retry_ap_changed": ("集结提交前的页面未确认，且体力读数变了；已停，未重试。",
+                               "The pre-submission screen could not be verified and AP changed; stopped without retrying."),
     "round_submitted": ("已点击集结，开始监测结算。", "Rally clicked. Watching for completion."),
     "round_confirmed": ("本轮结束，累计 {rallies} 次。", "Rally completed. Total: {rallies}."),
     "repair_icon": ("新扳手出现，本轮结束，累计 {rallies} 次。", "New wrench detected; rally completed. Total: {rallies}."),
@@ -115,8 +121,10 @@ TEXT = {
 }
 
 
-def tr(lang: int, key: str, **fields: object) -> str:
-    return TEXT[key][lang].format(**fields)
+def tr(lang: str, key: str, **fields: object) -> str:
+    simplified, english = TEXT[key]
+    template = english if lang == ENGLISH else traditional_text(simplified) if lang == TRADITIONAL else simplified
+    return template.format(**fields)
 
 
 def params(*, captain: str, level: str, batch: str, mode: str, hours: str, timeout: str, launch: str,
@@ -143,7 +151,7 @@ def params(*, captain: str, level: str, batch: str, mode: str, hours: str, timeo
 def _worker(args: list[str], done: SimpleQueue) -> None:
     try:
         if is_user_admin():
-            proc = subprocess.run([sys.executable, "-m", "foundation_assistant", *args], cwd=PROJECT_DIR,
+            proc = subprocess.run(application_command(args), cwd=PROJECT_DIR,
                                   creationflags=subprocess.CREATE_NO_WINDOW, check=False)
             done.put((proc.returncode, ""))
         else:
@@ -162,7 +170,7 @@ def _worker(args: list[str], done: SimpleQueue) -> None:
 class TributeUI:
     def __init__(self, root: tk.Tk, *, captain: str = "", english: bool = False) -> None:
         self.root = root
-        self.lang = int(english)
+        self.lang = ENGLISH if english else launcher_language(windows_display_language())
         self.bindings = []
         self.status = ("idle", {})
         self.record: Path | None = None
@@ -218,8 +226,8 @@ class TributeUI:
         self.local(tk.Label(hero, background="#142941", foreground="#fff", font=(font, 20, "bold")), "title").grid(row=0, column=0, sticky="w")
         self.local(tk.Label(hero, background="#142941", foreground="#c6daf1", font=(font, 10)), "tagline").grid(row=1, column=0, sticky="w", pady=(5, 0))
         self.local(tk.Label(hero, background="#142941", foreground="#c6daf1", font=(font, 9)), "language").grid(row=0, column=1, sticky="w", padx=(14, 0))
-        self.lang_box = ttk.Combobox(hero, values=("简体中文", "English"), state="readonly", width=11)
-        self.lang_box.current(self.lang)
+        self.lang_box = ttk.Combobox(hero, values=LANGUAGE_LABELS, state="readonly", width=11)
+        self.lang_box.current(LANGUAGES.index(self.lang))
         self.lang_box.grid(row=1, column=1, sticky="e", padx=(14, 0))
         self.lang_box.bind("<<ComboboxSelected>>", self._language)
 
@@ -298,8 +306,10 @@ class TributeUI:
         self.status_text.configure(wraplength=max(400, width - 60))
 
     def _language(self, _event=None) -> None:
-        self.lang = max(self.lang_box.current(), 0)
-        self._translate()
+        index = self.lang_box.current()
+        if 0 <= index < len(LANGUAGES):
+            self.lang = LANGUAGES[index]
+            self._translate()
 
     def _translate(self) -> None:
         self.root.title(tr(self.lang, "title"))
@@ -444,8 +454,9 @@ class TributeUI:
             message = self._event_text(row)
             if message:
                 lines.append(message)
-            if row.get("detail") and (kind == "stopped" or self.lang == 0):
-                lines.append(str(row["detail"]))
+            if row.get("detail") and (kind == "stopped" or self.lang != ENGLISH):
+                detail = str(row["detail"])
+                lines.append(traditional_text(detail) if self.lang == TRADITIONAL else detail)
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
         self.log.insert("end", "\n".join(lines))
@@ -501,9 +512,9 @@ class TributeUI:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Bilingual Tribute Vessel settings window.")
+    parser = argparse.ArgumentParser(description="Traditional Chinese, Simplified Chinese, or English Tribute Vessel settings window.")
     parser.add_argument("--captain", default="", help="Optional initial player name.")
-    parser.add_argument("--english", action="store_true", help="Open the UI in English.")
+    parser.add_argument("--english", action="store_true", help="Open in English instead of following the Windows display language.")
     args = parser.parse_args(argv)
     ensure_dpi_awareness()
     root = tk.Tk()

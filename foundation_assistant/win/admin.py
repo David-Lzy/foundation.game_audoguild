@@ -4,7 +4,6 @@ import ctypes
 import os
 import subprocess
 import sys
-from pathlib import Path
 from typing import Sequence
 
 SW_HIDE = 0
@@ -32,16 +31,14 @@ def should_relaunch_as_admin(*, require_admin: bool = False, env: dict[str, str]
     return require_admin or source.get(REQUIRE_ADMIN_ENV) == "1"
 
 
+def application_command(args: Sequence[str], executable: str | None = None) -> list[str]:
+    prefix = [] if getattr(sys, "frozen", False) else ["-m", "foundation_assistant"]
+    return [executable or sys.executable, *prefix, *args]
+
+
 def build_elevated_arguments(argv: Sequence[str] | None = None, executable: str | None = None) -> tuple[str, str]:
-    current_argv = list(sys.argv if argv is None else argv)
-    exe = executable or sys.executable
-    if current_argv and Path(current_argv[0]).name == "__main__.py":
-        parameters = subprocess.list2cmdline(["-m", "foundation_assistant", *current_argv[1:]])
-    elif getattr(sys, "frozen", False):
-        parameters = subprocess.list2cmdline(current_argv[1:])
-    else:
-        parameters = subprocess.list2cmdline(["-m", "foundation_assistant", *current_argv[1:]])
-    return exe, parameters
+    command = application_command((sys.argv if argv is None else argv)[1:], executable)
+    return command[0], subprocess.list2cmdline(command[1:])
 
 
 def relaunch_as_admin(argv: Sequence[str] | None = None, cwd: str | None = None) -> int:

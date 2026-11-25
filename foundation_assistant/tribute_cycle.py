@@ -18,7 +18,8 @@ import win32gui
 
 from foundation_assistant.games import GameProfile, get_profile
 from foundation_assistant.tribute_loop import (
-    AP_COST, Desktop, RallySetupNotOpened, RetryBeforeInput, Stop, TributeLoop, prepare_window, single_instance,
+    AP_COST, Desktop, RallySetupNotOpened, RallyTargetNotFound, RetryBeforeInput, Stop, TributeLoop,
+    prepare_window, single_instance,
 )
 from foundation_assistant.tribute_loop_vision import Frame, Point, TextReader
 from foundation_assistant.vision.screenshot import capture_window
@@ -368,14 +369,17 @@ class LiveCycleGame:
             before = self.loop.wait("提交前的星图维修提示基线", Frame.repair_view)
             try:
                 sent = self.loop.start(options.level, preview=False)
-            except RallySetupNotOpened:
+            except (RallySetupNotOpened, RallyTargetNotFound) as exc:
+                target_missing = isinstance(exc, RallyTargetNotFound)
                 expected = self.last_ap
                 if attempt or expected is None:
+                    if target_missing:
+                        raise CycleError("target_not_ready", str(exc)) from None
                     raise
                 observed = self.read_action_points()
                 if observed != expected:
                     raise CycleError("setup_retry_ap_changed", f"AP: {expected} → {observed}") from None
-                self.emit("setup_retry", ap=observed[0], capacity=observed[1])
+                self.emit("target_retry" if target_missing else "setup_retry", ap=observed[0], capacity=observed[1])
                 continue
             if sent is None:
                 raise CycleError("not_submitted")

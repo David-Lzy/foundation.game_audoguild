@@ -9,14 +9,15 @@ from foundation_assistant.tribute_loop_vision import Frame, RepairView, SIZE
 
 
 class RepairScreen:
-    def __init__(self, view):
+    def __init__(self, view, *, feedback=False):
         self.view = view
+        self.feedback = feedback
 
     def repair_view(self):
         return self.view
 
     def quick_repair_toast(self):
-        return False
+        return self.feedback
 
 
 class IO:
@@ -25,8 +26,11 @@ class IO:
         self.before = before
         self.after = after
         self.clicked = []
+        self.click_times = []
 
     def frame(self):
+        if self.clicked and callable(self.after):
+            return self.after(len(self.clicked), self.now)
         if self.clicked and self.after == "clear":
             return RepairScreen(RepairView(None))
         if self.clicked and self.after == "modal":
@@ -38,6 +42,7 @@ class IO:
 
     def click(self, point):
         self.clicked.append(point)
+        self.click_times.append(self.now)
 
     def loop(self):
         return TributeLoop(self, log=lambda _: None, clock=lambda: self.now)
@@ -84,11 +89,44 @@ def test_repair_clicks_only_once_and_requires_return_to_cleared_map():
     assert io.clicked == [(145, 327)]
 
 
-@pytest.mark.parametrize("after", ["modal", "unchanged"])
-def test_unknown_or_unchanged_repair_result_stops_without_a_second_click(after):
+def test_unchanged_wrench_retries_once_after_wait_and_can_clear():
+    io = IO(lambda _: RepairView((145, 327)), after=lambda clicks, _: RepairScreen(
+        RepairView((145, 327) if clicks == 1 else None)))
+    assert io.loop().repair_fleet()
+    assert io.clicked == [(145, 327), (145, 327)]
+    assert io.click_times[1] - io.click_times[0] >= 8
+
+
+def test_unchanged_wrench_after_two_clicks_stops_without_a_third():
+    io = IO(lambda _: RepairView((145, 327)), after="unchanged")
+    with pytest.raises(Stop, match="已点两次.*扳手提示消失"):
+        io.loop().repair_fleet()
+    assert io.clicked == [(145, 327), (145, 327)]
+
+
+@pytest.mark.parametrize("after", [
+    "modal",
+    lambda *_: RepairScreen(RepairView((145, 347))),
+    lambda *_: RepairScreen(RepairView((145, 327)), feedback=True),
+    lambda _, now: RepairScreen(RepairView(None if now < 0.5 else (145, 327))),
+])
+def test_modal_moved_wrench_feedback_or_transient_clear_blocks_retry(after):
     io = IO(lambda _: RepairView((145, 327)), after=after)
     with pytest.raises(Stop, match="扳手提示消失"):
         io.loop().repair_fleet()
+    assert io.clicked == [(145, 327)]
+
+
+def test_feedback_on_fresh_retry_frame_prevents_a_second_click():
+    io = IO(lambda _: RepairView((145, 327)), after="unchanged")
+
+    def log(message):
+        if message.endswith("重试一次。"):
+            io.after = lambda *_: RepairScreen(RepairView((145, 327)), feedback=True)
+
+    loop = TributeLoop(io, log=log, clock=lambda: io.now)
+    with pytest.raises(Stop, match="重试前画面已变化或出现维修反馈"):
+        loop.repair_fleet()
     assert io.clicked == [(145, 327)]
 
 

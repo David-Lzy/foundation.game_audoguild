@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -10,6 +12,25 @@ from typing import Any
 from foundation_assistant.win.window import GameWindow, find_game_window
 
 LAUNCH_PATH_ENV = "FOUNDATION_ASSISTANT_LAUNCH_PATH"
+
+
+def _start_process(path: Path, popen: Callable[..., subprocess.Popen[Any]]) -> subprocess.Popen[Any]:
+    argv, cwd = [str(path)], str(path.parent)
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle is None:
+        return popen(argv, cwd=cwd)
+    # A third-party launcher must not inherit the bundled Python/OCR DLL search path.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_dll_directory = kernel32.SetDllDirectoryW
+    set_dll_directory.argtypes = (ctypes.c_wchar_p,)
+    set_dll_directory.restype = ctypes.c_int
+    if not set_dll_directory(None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return popen(argv, cwd=cwd)
+    finally:
+        if not set_dll_directory(bundle):
+            raise ctypes.WinError(ctypes.get_last_error())
 
 
 def resolve_launch_path(path: str | None, env: Mapping[str, str] | None = None) -> tuple[Path | None, str | None]:
@@ -78,7 +99,7 @@ def launch_game(
             "error": f"Launch path does not exist: {launch_path}",
         }
 
-    process = popen([str(launch_path)], cwd=str(launch_path.parent))
+    process = _start_process(launch_path, popen)
     deadline = monotonic() + max(0.0, wait_seconds)
     attempts = 0
     last_error = initial_error

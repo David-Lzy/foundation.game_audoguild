@@ -176,7 +176,11 @@ def test_unconfirmed_result_stops_the_batch_without_refill_or_more_clicks(monkey
 
 
 @pytest.mark.parametrize("readback", [(270, 300), (240, 300)])
-def test_preconfirm_retry_requires_identical_ap_readback(readback):
+@pytest.mark.parametrize(("error_type", "retry_event"), [
+    (mod.RallySetupNotOpened, "setup_retry"),
+    (mod.RallyTargetNotFound, "target_retry"),
+])
+def test_preconfirm_retry_requires_identical_ap_readback(readback, error_type, retry_event):
     class LoopProbe:
         tries = 0
         readings = iter([(270, 300), readback])
@@ -191,7 +195,7 @@ def test_preconfirm_retry_requires_identical_ap_readback(readback):
             assert not preview
             self.tries += 1
             if self.tries == 1:
-                raise mod.RallySetupNotOpened("returned to star map")
+                raise error_type("returned to star map")
             return 123
 
         def wait_battle_end(self, *_args, **_kw):
@@ -203,7 +207,7 @@ def test_preconfirm_retry_requires_identical_ap_readback(readback):
     game.read_action_points()
     if readback == (270, 300):
         assert game.rally(mod.CycleOptions("Test captain")) == "victory_mail"
-        assert loop.tries == 2 and events == ["setup_retry", "round_submitted"]
+        assert loop.tries == 2 and events == [retry_event, "round_submitted"]
     else:
         with pytest.raises(mod.CycleError) as error:
             game.rally(mod.CycleOptions("Test captain"))

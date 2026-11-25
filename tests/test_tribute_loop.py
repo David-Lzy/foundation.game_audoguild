@@ -286,6 +286,38 @@ def test_only_visible_map_is_retryable_if_setup_did_not_open(is_map):
     assert isinstance(error.value, mod.RallySetupNotOpened) is is_map
 
 
+@pytest.mark.parametrize("is_map", [True, False])
+def test_missing_red_target_is_only_recoverable_from_verified_map(monkeypatch, is_map):
+    class Screen:
+        def frame(self):
+            return self
+
+        def search_header(self):
+            return True
+
+        def search_tab(self, *, selected=False):
+            return (1000, 430)
+
+        def repair_view(self):
+            return object() if is_map else None
+
+    monkeypatch.setattr(mod, "Frame", Screen)
+    loop = mod.TributeLoop(Screen(), clock=lambda: 0)
+    monkeypatch.setattr(loop, "set_level", lambda _: None)
+    stages = []
+
+    def step(label, *_args, **_kwargs):
+        stages.append(label)
+        if "红色集结" in label:
+            raise mod.ObservationTimeout("missing red target")
+
+    monkeypatch.setattr(loop, "step", step)
+    with pytest.raises(mod.Stop) as error:
+        loop.start(3, preview=False)
+    assert isinstance(error.value, mod.RallyTargetNotFound) is is_map
+    assert len(stages) == 2 and "红色集结" in stages[-1]
+
+
 def test_1080p_required_and_button_templates_are_packaged():
     profile = get_profile()
     with pytest.raises(ValueError, match="1920×1080"):
