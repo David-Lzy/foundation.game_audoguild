@@ -30,7 +30,7 @@ def _check() -> dict:
     root = tk.Tk()
     try:
         root.withdraw()
-        ui = TributeUI(root)
+        ui = TributeUI(root, captain="Smoke Check")
         choices = root.tk.splitlist(ui.lang_box["values"])
         if tuple(choices) != ("简体中文", "繁體中文", "English"):
             raise RuntimeError(f"Unexpected display languages: {choices}")
@@ -42,6 +42,15 @@ def _check() -> dict:
             root.update_idletasks()
             if root.title() != title:
                 raise RuntimeError(f"Launcher title did not switch to {choices[index]}.")
+        default_hunt_retry = ui._settings().hunt_retry_minutes
+        if default_hunt_retry != 5 or ui.hunt_spin.instate(["disabled"]):
+            raise RuntimeError("Hunt retry was not enabled at the default five-minute interval.")
+        ui.hunt_interval.set("2")
+        if ui._settings().hunt_retry_minutes != 2:
+            raise RuntimeError("The Hunt retry interval did not reach worker settings.")
+        ui.hunt_check.invoke()
+        if ui._settings().hunt_retry_minutes is not None or not ui.hunt_spin.instate(["disabled"]):
+            raise RuntimeError("The Hunt retry checkbox did not turn off retrying.")
     finally:
         root.destroy()
 
@@ -78,6 +87,7 @@ def _check() -> dict:
         raise RuntimeError("Worker did not return a dry-run plan.")
 
     return {"languages": choices, "default_language": default_language, "templates": len(templates),
+            "hunt_retry_default_minutes": default_hunt_retry,
             "ocr": recognized, "worker_plan_exit": worker.returncode, "artifacts_dir": str(ARTIFACTS_DIR)}
 
 

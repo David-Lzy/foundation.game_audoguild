@@ -23,6 +23,8 @@ MIN_WAIT = 180
 AP_COST = RALLY_COST
 MAIL_FIRST_POLL = 45  # Fallback only; the quick-repair signal is watched immediately.
 MAIL_POLL_INTERVAL = 20
+MAIL_NAV_RECOVERY = 8
+DEFAULT_HUNT_RETRY_MINUTES = 5
 T = TypeVar("T")
 
 
@@ -311,21 +313,49 @@ class TributeLoop:
             self.io.pause(min(15, max(0, deadline - self.clock())))
         raise Stop("超时，未确认本轮新战报；不会开始下一轮。请在游戏里检查是否仍在战斗或集结已取消。")
 
-    def check_victory_mail(self, captain: str, level: int, sent: float, deadline: float) -> bool:
+    def check_victory_mail(self, captain: str, level: int, sent: float, deadline: float) -> bool | None:
+        """True for a fresh report, False for a readable list with no match, None after safe recovery."""
         self.step("地图邮件入口", lambda frame: frame.map_mail() if frame.map_search() else None)
         self.io.pause(0.65)
-        _, _, selected = self.wait("邮件的巡猎列表", Frame.mail, 18)
-        if not selected:
-            self.step("巡猎邮件标签", lambda frame: page[1] if (page := frame.mail()) else None, timeout=18)
-        captured_at = self.clock()
-        report_frame = self.wait("选中的巡猎邮件标签", lambda frame: frame if ((page := frame.mail()) and page[2]) else None, 18)
+        try:
+            _, _, selected = self.wait("邮件的巡猎列表", Frame.mail, 18)
+            if not selected:
+                self.step("巡猎邮件标签", lambda frame: page[1] if (page := frame.mail()) else None, timeout=18)
+            captured_at = self.clock()
+            report_frame = self.wait("选中的巡猎邮件标签",
+                                     lambda frame: frame if ((page := frame.mail()) and page[2]) else None, 18)
+        except ObservationTimeout as problem:
+            # The mail check is only an observation of the already-submitted rally.
+            # Losing the tab recognition must never cause that rally to be replayed.
+            self._recover_mail_poll(problem)
+            return None
         won = captured_at < deadline and report_frame.fresh_victory(captain, level, captured_at - sent)
         self.step("邮件返回箭头", Frame.mail_back)
         self.wait("返回星图", Frame.map_search)
         return won
 
+    def _recover_mail_poll(self, problem: ObservationTimeout) -> None:
+        def known_page(frame: Frame) -> str | None:
+            if frame.mail_back() is not None:
+                return "mail"
+            if frame.repair_view() is not None:
+                return "map"
+            return None
+
+        try:
+            page = self.wait("已确认的邮件页或无弹窗的星图", known_page, MAIL_NAV_RECOVERY)
+        except ObservationTimeout:
+            raise problem from None
+        if page == "mail":
+            self.step("巡猎暂未识别，使用已确认的邮件返回箭头", Frame.mail_back,
+                      timeout=MAIL_NAV_RECOVERY, stabilize=True)
+            self.wait("邮件恢复后返回无弹窗的星图", Frame.repair_view, MAIL_NAV_RECOVERY)
+        self.log("本次未能识别巡猎列表，已核对回到星图；继续等当前轮结算，不重发集结。")
+
     def wait_battle_end(self, captain: str, level: int, sent: float, timeout: int, *,
-                        repair_already_visible: bool) -> str:
+                        repair_already_visible: bool,
+                        hunt_retry_minutes: int | None = DEFAULT_HUNT_RETRY_MINUTES,
+                        emit: Callable[..., None] = lambda *_args, **_fields: None) -> str:
         """Watch the verified fleet sidebar immediately, and use new mail as a fallback."""
         deadline = sent + timeout
         mail_at = sent + MAIL_FIRST_POLL
@@ -341,10 +371,21 @@ class TributeLoop:
                 return "repair_icon"
             previous = point
             if view is not None and point is None and mail_at <= self.clock() < deadline:
-                if self.check_victory_mail(captain, level, sent, deadline):
+                result = self.check_victory_mail(captain, level, sent, deadline)
+                if result:
                     self.log(f"已确认本轮 {level} 级贡品船胜利战报。")
                     return "victory_mail"
-                mail_at = self.clock() + MAIL_POLL_INTERVAL
+                if result is not None:
+                    mail_at = self.clock() + MAIL_POLL_INTERVAL
+                elif hunt_retry_minutes is None:
+                    mail_at = deadline
+                    emit("hunt_retry_disabled")
+                else:
+                    mail_at = self.clock() + hunt_retry_minutes * 60
+                    if mail_at < deadline:
+                        emit("hunt_retry_waiting", minutes=hunt_retry_minutes)
+                    else:
+                        emit("hunt_retry_past_deadline")
             self.io.pause(min(0.8, max(0, deadline - self.clock())))
         raise Stop("结算超时：没有本轮新维修提示，也没有可确认的新胜利战报。不会发下一轮。")
 

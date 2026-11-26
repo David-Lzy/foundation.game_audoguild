@@ -17,7 +17,8 @@ from foundation_assistant.launcher_locale import (
 )
 from foundation_assistant.paths import PROJECT_DIR, RUNS_DIR
 from foundation_assistant.tribute_cycle import (
-    DEFAULT_BATCH, DEFAULT_TIMEOUT, MAX_BATCH, MAX_TOTAL_RALLIES, MIN_RESULT_TIMEOUT, CycleError, CycleOptions,
+    DEFAULT_BATCH, DEFAULT_HUNT_RETRY_MINUTES, DEFAULT_TIMEOUT, MAX_BATCH, MAX_HUNT_RETRY_MINUTES,
+    MAX_TOTAL_RALLIES, MIN_RESULT_TIMEOUT, CycleError, CycleOptions,
 )
 from foundation_assistant.win.admin import application_command, is_user_admin, run_as_admin_and_wait
 from foundation_assistant.win.window import ensure_dpi_awareness
@@ -42,22 +43,28 @@ TEXT = {
     "strict_count": ("严格不超次数（可能以满体力停止）", "Strict count limit (final AP may be full)"),
     "timeout": ("结算超时（秒）", "Rally timeout (s)"),
     "repair": ("战后快捷维修（使用已有维修模组）", "Quick repair after each rally (uses owned modules)"),
+    "hunt_retry": ("巡猎列表读不到时重查", "Retry unreadable Hunt list"),
+    "hunt_interval": ("间隔（分钟）", "Interval (min)"),
     "launcher": ("游戏启动器（选填）", "Game launcher (optional)"),
     "browse": ("浏览…", "Browse…"),
     "exe": ("可执行文件", "Executables"),
-    "flow": ("每批体力低于 300 才补；本轮新扳手或新胜利战报确认结束，不再固定等待。",
-             "Refill only below 300 AP at the start of a batch. A new wrench or victory report ends the wait; no fixed delay."),
-    "controls": ("运行时设置窗口保留并更新日志。游戏失去前台时会自动多次尝试拉回，请松开键鼠，别与脚本同时操作。\nF9 正常收尾；F8 急停（不保证体力未满）。到点或到数后，不再补体力。",
-                 "This window stays open and shows live logs. The game will be brought back to the front if it loses focus. Release the keyboard and mouse; avoid interacting during automatic clicks. F9 finishes cleanly; F8 stops immediately."),
-    "warning": ("游戏支持繁体中文和 English，无需另选。先打完已有集结并回到星图。运行消耗体力和已有药水，不会购买。",
-                "The game may use Traditional Chinese or English. Finish existing rallies and return to the star map. Uses AP and owned potions; no purchases."),
+    "flow": ("体力低于 300 才补；新扳手或胜利战报确认结束。巡猎重查不延长超时。",
+             "Refills below 300 AP. A new wrench or win report ends the wait; retries never extend the timeout."),
+    "controls": ("启动器保留并更新日志。游戏会自动拉回前台，运行时别操作键鼠。F9 收尾；F8 急停（体力可能仍满）。",
+                 "This window shows live logs. The game returns to the foreground; avoid using the mouse or keyboard. F9: finish. F8: stop."),
+    "warning": ("请先打完已有集结并回到星图。支持繁中或英文游戏；只用已有道具，不购买。",
+                "Finish existing rallies and return to the star map. Traditional Chinese or English game; no purchases."),
     "status": ("运行状态", "Run status"),
     "idle": ("填好参数后，点「开始运行」。", "Fill in the settings, then select Start."),
     "plan": ("预览参数", "Preview settings"),
     "start": ("开始运行", "Start"),
     "open_log": ("打开日志", "Open log"),
-    "plan_result": ("计划：{level} 级 · 每批 {batch} 次 · {duration}。没有操作游戏。",
-                    "Plan: Lv. {level} · {batch} rallies per batch · {duration}. No game actions taken."),
+    "plan_result": ("预览：{level} 级 · 每批 {batch} 次 · {duration}。未操作游戏。\n{hunt_plan}",
+                    "Preview only: Lv. {level} · {batch}/batch · {duration}.\n{hunt_plan}"),
+    "plan_hunt_on": ("巡猎列表读不到时，每 {minutes} 分钟重查。",
+                     "Retry unreadable Hunt list every {minutes} min."),
+    "plan_hunt_off": ("巡猎列表读不到时不再重查邮件，仍监测扳手。",
+                      "No mail retries after an unreadable Hunt list; keep watching for the wrench."),
     "duration_hours": ("{hours} 小时", "{hours} hours"),
     "duration_count": ("完成 {target} 次后收尾（满体力时可能补打）", "start cleanup after {target} rallies (may add rallies if AP is full)"),
     "duration_strict": ("最多 {target} 次（不补打）", "up to {target} rallies (no extra rallies)"),
@@ -72,6 +79,8 @@ TEXT = {
     "invalid_hours": ("定时运行请输入大于 0、最多 720 的小时数。", "Enter a timed duration above 0 and no more than 720 hours."),
     "invalid_total_rallies": (f"总集结次数必须是 1–{MAX_TOTAL_RALLIES} 的整数。", f"Enter a whole rally count from 1 to {MAX_TOTAL_RALLIES}."),
     "invalid_timeout": ("结算超时必须是 60–1800 秒。", "Rally timeout must be 60 to 1800 seconds."),
+    "invalid_hunt_retry_minutes": (f"巡猎重查间隔必须是 1–{MAX_HUNT_RETRY_MINUTES} 分钟的整数。",
+                                   f"Enter a whole Hunt retry interval from 1 to {MAX_HUNT_RETRY_MINUTES} minutes."),
     "invalid_launcher": ("请选择本机存在的游戏启动器 .exe，或留空。", "Choose an existing game launcher .exe, or leave it blank."),
     "unknown_capacity": ("没有读到可确认的 300 体力上限，已停。", "Could not verify a 300 AP cap; stopped."),
     "refill_not_full": ("没核对到补满，已停。", "A full refill could not be verified; stopped."),
@@ -105,6 +114,12 @@ TEXT = {
     "setup_retry_ap_changed": ("集结提交前的页面未确认，且体力读数变了；已停，未重试。",
                                "The pre-submission screen could not be verified and AP changed; stopped without retrying."),
     "round_submitted": ("已点击集结，开始监测结算。", "Rally clicked. Watching for completion."),
+    "hunt_retry_waiting": ("巡猎列表暂时读不到，{minutes} 分钟后重查；期间仍监测扳手。",
+                           "Hunt list unreadable. Retrying in {minutes} min; still watching for the wrench."),
+    "hunt_retry_disabled": ("巡猎列表暂时读不到，本轮不再重查邮件；仍监测扳手。",
+                            "Hunt list unreadable. No more mail retries for this rally; still watching for the wrench."),
+    "hunt_retry_past_deadline": ("结算剩余时间不足以重查巡猎列表，继续监测扳手直到超时。",
+                                 "No Hunt retry fits before the deadline. Still watching for the wrench."),
     "round_confirmed": ("本轮结束，累计 {rallies} 次。", "Rally completed. Total: {rallies}."),
     "repair_icon": ("新扳手出现，本轮结束，累计 {rallies} 次。", "New wrench detected; rally completed. Total: {rallies}."),
     "victory_mail": ("新胜利战报已确认，累计 {rallies} 次。", "New victory report verified. Total: {rallies}."),
@@ -128,7 +143,8 @@ def tr(lang: str, key: str, **fields: object) -> str:
 
 
 def params(*, captain: str, level: str, batch: str, mode: str, hours: str, timeout: str, launch: str,
-           repair_after_rally: bool = True, total_rallies: str = "", strict_count: bool = False) -> CycleOptions:
+           repair_after_rally: bool = True, total_rallies: str = "", strict_count: bool = False,
+           hunt_retry: bool = True, hunt_interval: str = str(DEFAULT_HUNT_RETRY_MINUTES)) -> CycleOptions:
     numbers: list[int] = []
     for name, value in (("level", level), ("batch", batch), ("timeout", timeout)):
         try:
@@ -143,9 +159,14 @@ def params(*, captain: str, level: str, batch: str, mode: str, hours: str, timeo
         total = int(total_rallies) if mode == "count" else None
     except ValueError as exc:
         raise CycleError("invalid_total_rallies") from exc
+    try:
+        retry_minutes = int(hunt_interval) if hunt_retry else None
+    except ValueError as exc:
+        raise CycleError("invalid_hunt_retry_minutes") from exc
     return CycleOptions(captain, numbers[0], numbers[1], duration, numbers[2],
                         Path(launch.strip()) if launch.strip() else None, repair_after_rally,
-                        total_rallies=total, strict_count=strict_count and total is not None)
+                        total_rallies=total, strict_count=strict_count and total is not None,
+                        hunt_retry_minutes=retry_minutes)
 
 
 def _worker(args: list[str], done: SimpleQueue) -> None:
@@ -188,7 +209,10 @@ class TributeUI:
         self.timeout = tk.StringVar(value=str(DEFAULT_TIMEOUT))
         self.launch = tk.StringVar()
         self.repair_after_rally = tk.BooleanVar(value=True)
+        self.hunt_retry = tk.BooleanVar(value=True)
+        self.hunt_interval = tk.StringVar(value=str(DEFAULT_HUNT_RETRY_MINUTES))
         self._build()
+        self.hunt_retry.trace_add("write", self._hunt_controls)
         self._translate()
 
     def local(self, widget, key: str):
@@ -198,7 +222,8 @@ class TributeUI:
     def _build(self) -> None:
         root = self.root
         root.geometry("870x928")
-        root.minsize(810, 835)
+        # Keep the options and the log visible together, including at Windows DPI scaling.
+        root.minsize(870, 928)
         root.columnconfigure(0, weight=1)
         root.rowconfigure(1, weight=1)
         root.configure(background="#eaf0f8")
@@ -242,33 +267,40 @@ class TributeUI:
         form.columnconfigure(3, weight=1)
 
         def label(row, col, key):
-            self.local(ttk.Label(form, anchor="w"), key).grid(row=row, column=col, sticky="w", padx=(0, 10), pady=5)
+            self.local(ttk.Label(form, anchor="w"), key).grid(row=row, column=col, sticky="w", padx=(0, 10), pady=3)
 
         label(0, 0, "captain")
         self.name_entry = ttk.Entry(form, textvariable=self.captain)
-        self.name_entry.grid(row=0, column=1, columnspan=3, sticky="ew", pady=5)
+        self.name_entry.grid(row=0, column=1, columnspan=3, sticky="ew", pady=3)
         self.local(ttk.Label(form, style="Tip.TLabel"), "name_hint").grid(row=1, column=1, columnspan=3, sticky="w")
         label(2, 0, "level")
-        ttk.Spinbox(form, from_=1, to=99, textvariable=self.level, width=7).grid(row=2, column=1, sticky="w", pady=5)
+        ttk.Spinbox(form, from_=1, to=99, textvariable=self.level, width=7).grid(row=2, column=1, sticky="w", pady=3)
         label(2, 2, "batch")
-        ttk.Spinbox(form, from_=1, to=MAX_BATCH, textvariable=self.batch, width=7).grid(row=2, column=3, sticky="w", pady=5)
+        ttk.Spinbox(form, from_=1, to=MAX_BATCH, textvariable=self.batch, width=7).grid(row=2, column=3, sticky="w", pady=3)
         label(3, 0, "mode")
         modes = ttk.Frame(form)
         modes.grid(row=3, column=1, columnspan=3, sticky="w")
         for col, key in enumerate(("timed", "count", "continuous")):
             self.local(ttk.Radiobutton(modes, value=key, variable=self.mode, command=self._change_mode), key).grid(row=0, column=col, padx=(0, 16), pady=4)
         self.limit_label = ttk.Label(form, anchor="w")
-        self.limit_label.grid(row=4, column=0, sticky="w", padx=(0, 10), pady=5)
+        self.limit_label.grid(row=4, column=0, sticky="w", padx=(0, 10), pady=3)
         self.limit_entry = ttk.Entry(form, width=10)
-        self.limit_entry.grid(row=4, column=1, sticky="w", pady=5)
+        self.limit_entry.grid(row=4, column=1, sticky="w", pady=3)
         label(4, 2, "timeout")
-        ttk.Spinbox(form, from_=MIN_RESULT_TIMEOUT, to=1800, increment=15, textvariable=self.timeout, width=7).grid(row=4, column=3, sticky="w", pady=5)
+        ttk.Spinbox(form, from_=MIN_RESULT_TIMEOUT, to=1800, increment=15, textvariable=self.timeout, width=7).grid(row=4, column=3, sticky="w", pady=3)
         label(5, 0, "launcher")
-        ttk.Entry(form, textvariable=self.launch).grid(row=5, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=5)
+        ttk.Entry(form, textvariable=self.launch).grid(row=5, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=3)
         self.local(ttk.Button(form, command=self._browse), "browse").grid(row=5, column=3, sticky="e")
         self.local(ttk.Checkbutton(form, variable=self.repair_after_rally), "repair").grid(row=6, column=1, columnspan=3, sticky="w", pady=(4, 1))
+        hunt = ttk.Frame(form)
+        hunt.grid(row=7, column=1, columnspan=3, sticky="w", pady=(3, 1))
+        self.hunt_check = self.local(ttk.Checkbutton(hunt, variable=self.hunt_retry), "hunt_retry")
+        self.hunt_check.grid(row=0, column=0, sticky="w")
+        self.local(ttk.Label(hunt), "hunt_interval").grid(row=0, column=1, padx=(14, 6))
+        self.hunt_spin = ttk.Spinbox(hunt, from_=1, to=MAX_HUNT_RETRY_MINUTES, textvariable=self.hunt_interval, width=4)
+        self.hunt_spin.grid(row=0, column=2, sticky="w")
         self.count_check = self.local(ttk.Checkbutton(form, variable=self.strict_count), "strict_count")
-        self.count_check.grid(row=7, column=1, columnspan=3, sticky="w", pady=(3, 1))
+        self.count_check.grid(row=8, column=1, columnspan=3, sticky="w", pady=(3, 1))
 
         for row, key in enumerate(("flow", "controls", "warning"), start=1):
             style_name = "Focus.TLabel" if key == "controls" else "Tip.TLabel"
@@ -280,7 +312,7 @@ class TributeUI:
         status.rowconfigure(1, weight=1)
         self.status_text = ttk.Label(status, wraplength=706, style="Status.TLabel")
         self.status_text.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 3))
-        self.log = tk.Text(status, height=4, wrap="word", bg="white", fg="#1e3755", font=(font, 9), relief="flat", padx=7, pady=4, state="disabled")
+        self.log = tk.Text(status, width=1, height=4, wrap="word", bg="white", fg="#1e3755", font=(font, 9), relief="flat", padx=7, pady=4, state="disabled")
         self.log.grid(row=1, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(status, orient="vertical", command=self.log.yview)
         scroll.grid(row=1, column=1, sticky="ns")
@@ -333,6 +365,9 @@ class TributeUI:
         else:
             self.count_check.grid_remove()
 
+    def _hunt_controls(self, *_args) -> None:
+        self.hunt_spin.state(["disabled" if self.running or not self.hunt_retry.get() else "!disabled"])
+
     def _run_controls(self) -> None:
         state = ["disabled" if self.running else "!disabled"]
 
@@ -346,6 +381,7 @@ class TributeUI:
         self.plan_button.state(state)
         self.run_button.state(state)
         self._change_mode()
+        self._hunt_controls()
 
     def _browse(self) -> None:
         path = filedialog.askopenfilename(parent=self.root, title=tr(self.lang, "launcher"), filetypes=[(tr(self.lang, "exe"), "*.exe")])
@@ -356,7 +392,8 @@ class TributeUI:
         return params(captain=self.captain.get(), level=self.level.get(), batch=self.batch.get(), mode=self.mode.get(),
                       hours=self.hours.get(), timeout=self.timeout.get(), launch=self.launch.get(),
                       repair_after_rally=self.repair_after_rally.get(), total_rallies=self.total_rallies.get(),
-                      strict_count=self.strict_count.get())
+                      strict_count=self.strict_count.get(), hunt_retry=self.hunt_retry.get(),
+                      hunt_interval=self.hunt_interval.get())
 
     def _status(self, key: str, **fields: object) -> None:
         self.status = (key, fields)
@@ -372,6 +409,8 @@ class TributeUI:
                 fields["duration"] = tr(self.lang, "duration_strict" if strict else "duration_count", target=total)
             else:
                 fields["duration"] = tr(self.lang, "continuous") if hours is None else tr(self.lang, "duration_hours", hours=f"{hours:g}")
+            retry = fields.pop("hunt_retry_minutes")
+            fields["hunt_plan"] = tr(self.lang, "plan_hunt_off" if retry is None else "plan_hunt_on", minutes=retry)
         if key == "running_event":
             fields["message"] = self._event_text(fields.pop("row")) or tr(self.lang, "preparing")
         self.status_text.configure(text=tr(self.lang, key, **fields))
@@ -383,7 +422,8 @@ class TributeUI:
             self._status(exc.code)
         else:
             self._status("plan_result", level=cfg.level, batch=cfg.batch_size, hours=cfg.hours,
-                         total_rallies=cfg.total_rallies, strict_count=cfg.strict_count)
+                         total_rallies=cfg.total_rallies, strict_count=cfg.strict_count,
+                         hunt_retry_minutes=cfg.hunt_retry_minutes)
 
     def run(self) -> None:
         if self.running:

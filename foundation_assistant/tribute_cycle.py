@@ -18,7 +18,7 @@ import win32gui
 
 from foundation_assistant.games import GameProfile, get_profile
 from foundation_assistant.tribute_loop import (
-    AP_COST, Desktop, RallySetupNotOpened, RallyTargetNotFound, RetryBeforeInput, Stop, TributeLoop,
+    AP_COST, DEFAULT_HUNT_RETRY_MINUTES, Desktop, RallySetupNotOpened, RallyTargetNotFound, RetryBeforeInput, Stop, TributeLoop,
     prepare_window, single_instance,
 )
 from foundation_assistant.tribute_loop_vision import Frame, Point, TextReader
@@ -33,6 +33,7 @@ DEFAULT_TIMEOUT = 480
 MIN_RESULT_TIMEOUT = 60
 MAX_BATCH = CAPACITY // AP_COST
 MAX_TOTAL_RALLIES = 10_000
+MAX_HUNT_RETRY_MINUTES = 30
 FOCUS_TIMEOUT = 30
 FOCUS_RETRY_DELAY = 0.55
 FOCUS_SETTLE = 0.16
@@ -60,6 +61,7 @@ class CycleOptions:
     repair_after_rally: bool = True
     total_rallies: int | None = None
     strict_count: bool = False
+    hunt_retry_minutes: int | None = DEFAULT_HUNT_RETRY_MINUTES
 
     def __post_init__(self) -> None:
         nickname = self.captain.strip()
@@ -80,6 +82,10 @@ class CycleOptions:
             raise CycleError("strict_count_requires_total")
         if not MIN_RESULT_TIMEOUT <= self.result_timeout <= 1800:
             raise CycleError("invalid_timeout")
+        if self.hunt_retry_minutes is not None and (
+            type(self.hunt_retry_minutes) is not int or not 1 <= self.hunt_retry_minutes <= MAX_HUNT_RETRY_MINUTES
+        ):
+            raise CycleError("invalid_hunt_retry_minutes")
         if self.launch_path is not None:
             path = self.launch_path.expanduser()
             if not path.is_absolute() or path.suffix.casefold() != ".exe" or not path.is_file():
@@ -89,6 +95,10 @@ class CycleOptions:
     def arguments(self) -> list[str]:
         args = [f"--captain={self.captain}", "--level", str(self.level), "--batch-size", str(self.batch_size),
                 "--result-timeout", str(self.result_timeout)]
+        if self.hunt_retry_minutes is None:
+            args.append("--no-hunt-retry")
+        elif self.hunt_retry_minutes != DEFAULT_HUNT_RETRY_MINUTES:
+            args.extend(("--hunt-retry-minutes", str(self.hunt_retry_minutes)))
         if self.hours is not None:
             args.extend(("--hours", str(self.hours)))
         if self.total_rallies is not None:
@@ -385,7 +395,8 @@ class LiveCycleGame:
                 raise CycleError("not_submitted")
             self.emit("round_submitted", repair_already_visible=before.button is not None)
             return self.loop.wait_battle_end(options.captain, options.level, sent, options.result_timeout,
-                                             repair_already_visible=before.button is not None)
+                                             repair_already_visible=before.button is not None,
+                                             hunt_retry_minutes=options.hunt_retry_minutes, emit=self.emit)
         raise AssertionError("unreachable")
 
     def repair(self) -> bool:
@@ -433,6 +444,11 @@ def add_parser(subparsers) -> None:
     stop_mode.add_argument("--total-rallies", type=int, help="Start finishing after this many verified rallies.")
     parser.add_argument("--strict-count", action="store_true", help="With --total-rallies, never exceed the count, even during AP cleanup.")
     parser.add_argument("--result-timeout", type=int, default=DEFAULT_TIMEOUT)
+    hunt = parser.add_mutually_exclusive_group()
+    hunt.add_argument("--hunt-retry-minutes", type=int, default=DEFAULT_HUNT_RETRY_MINUTES,
+                      help="Recheck a temporarily unreadable Hunt list after this many minutes (default: 5).")
+    hunt.add_argument("--no-hunt-retry", action="store_const", const=None, dest="hunt_retry_minutes",
+                      help="After an unreadable Hunt list, only watch for the repair icon for that rally.")
     parser.add_argument("--repair-after-rally", action=argparse.BooleanOptionalAction, default=True,
                         help="Click one recognized quick-repair control after each completed rally (default on).")
     parser.add_argument("--launch-path", type=Path, help="Optional game launcher executable if the game is closed.")
@@ -445,13 +461,15 @@ def add_parser(subparsers) -> None:
 def command(args: argparse.Namespace) -> int:
     try:
         cfg = CycleOptions(args.captain, args.level, args.batch_size, args.hours, args.result_timeout,
-                           args.launch_path, args.repair_after_rally, args.total_rallies, args.strict_count)
+                           args.launch_path, args.repair_after_rally, args.total_rallies, args.strict_count,
+                           hunt_retry_minutes=args.hunt_retry_minutes)
     except CycleError as exc:
         args.tribute_cycle_parser.error(exc.code)
     if not args.execute:
         plan = {"mode": "plan", "size": [1920, 1080], "action_point_cap": CAPACITY,
                 "level": cfg.level, "batch_size": cfg.batch_size, "hours": cfg.hours,
-                "repair_after_rally": cfg.repair_after_rally, "final_ap_below": None if cfg.strict_count else CAPACITY}
+                "repair_after_rally": cfg.repair_after_rally, "hunt_retry_minutes": cfg.hunt_retry_minutes,
+                "final_ap_below": None if cfg.strict_count else CAPACITY}
         if cfg.total_rallies is not None:
             plan.update(total_rallies=cfg.total_rallies, strict_count=cfg.strict_count)
         print(json.dumps(plan, ensure_ascii=False))

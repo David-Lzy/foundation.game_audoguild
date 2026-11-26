@@ -238,7 +238,7 @@ def test_cli_plan_never_launches_game(monkeypatch, capsys):
     assert args.func(args) == 0
     assert json.loads(capsys.readouterr().out) == {"mode": "plan", "size": [1920, 1080], "action_point_cap": 300,
                                                 "level": 3, "batch_size": 8, "hours": 1.5,
-                                                "repair_after_rally": True, "final_ap_below": 300}
+                                                "repair_after_rally": True, "hunt_retry_minutes": 5, "final_ap_below": 300}
 
 
 def test_cli_count_plan_and_conflicting_modes(monkeypatch, capsys):
@@ -304,3 +304,24 @@ def test_ui_count_mode_validates_active_field_and_passes_strict_flag():
         with pytest.raises(mod.CycleError) as error:
             params(**fields, total_rallies=invalid)
         assert error.value.code == "invalid_total_rallies"
+
+
+@pytest.mark.parametrize("retry", [None, 5, 2, 30])
+def test_hunt_retry_options_reach_worker_plan(monkeypatch, capsys, retry):
+    parser = argparse.ArgumentParser()
+    mod.add_parser(parser.add_subparsers())
+    monkeypatch.setattr(mod, "_live", lambda *_: pytest.fail("plan touched the game"))
+    options = mod.CycleOptions("Test captain", hunt_retry_minutes=retry)
+    args = parser.parse_args(["tribute-cycle", *options.arguments()])
+    assert args.func(args) == 0
+    assert json.loads(capsys.readouterr().out)["hunt_retry_minutes"] == retry
+
+
+def test_hunt_retry_ui_validation_ignores_interval_only_when_unchecked():
+    fields = dict(captain="Test captain", level="3", batch="8", mode="continuous", hours="unused", timeout="480", launch="")
+    assert params(**fields).hunt_retry_minutes == 5
+    assert params(**fields, hunt_retry=False, hunt_interval="invalid").hunt_retry_minutes is None
+    for invalid in ("", "0", "1.5", "31"):
+        with pytest.raises(mod.CycleError) as error:
+            params(**fields, hunt_interval=invalid)
+        assert error.value.code == "invalid_hunt_retry_minutes"

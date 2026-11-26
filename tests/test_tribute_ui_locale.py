@@ -81,3 +81,31 @@ def test_english_launch_flag_overrides_windows_display_language(monkeypatch, roo
     monkeypatch.setattr(ui, "windows_display_language", lambda: pytest.fail("explicit English should bypass detection"))
     app = ui.TributeUI(root, english=True)
     assert app.lang_box.get() == "English"
+
+
+def test_hunt_retry_check_interval_preview_and_worker_arguments(root):
+    app = ui.TributeUI(root, captain="Test captain", english=True)
+    assert app.hunt_check["text"] == "Retry unreadable Hunt list"
+    assert app.hunt_retry.get() and app.hunt_interval.get() == "5"
+    assert not app.hunt_spin.instate(["disabled"])
+
+    app.hunt_interval.set("2")
+    args = app._settings().arguments()
+    assert args[args.index("--hunt-retry-minutes") + 1] == "2"
+    app.validate()
+    assert "every 2 min" in app.status_text["text"]
+    app.lang_box.current(1)
+    app._language()
+    assert "巡獵列表" in app.hunt_check["text"] and "2 分鐘" in app.status_text["text"]
+
+    app.hunt_check.invoke()
+    assert app.hunt_spin.instate(["disabled"])
+    assert "--no-hunt-retry" in app._settings().arguments()
+    app.validate()
+    assert "不再重查" in app.status_text["text"]
+    app.running = True
+    app._run_controls()
+    assert app.hunt_check.instate(["disabled"])
+    app.running = False
+    app._run_controls()
+    assert not app.hunt_check.instate(["disabled"]) and app.hunt_spin.instate(["disabled"])

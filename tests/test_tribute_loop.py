@@ -7,7 +7,7 @@ import pytest
 
 from foundation_assistant import tribute_loop as mod
 from foundation_assistant.games import get_profile
-from foundation_assistant.tribute_loop_vision import Frame, SIZE, is_tribute_victory, mail_age_upper, points_number
+from foundation_assistant.tribute_loop_vision import Frame, RepairView, SIZE, is_tribute_victory, mail_age_upper, points_number
 from foundation_assistant.win.window import GameWindow, Rect
 
 
@@ -24,6 +24,9 @@ class MockFrame:
 
     def map_avatar(self):
         return (44, 45) if self.state == "map" else None
+
+    def repair_view(self):
+        return RepairView(None) if self.state == "map" else None
 
     def search_header(self):
         return True if self.state in ("other", "tribute") else None
@@ -178,6 +181,42 @@ def test_missing_result_stops_after_one_rally(monkeypatch):
         io.session().run(captain="Captain", level=3, rounds=0, result_timeout=190, auto_refill=False)
     assert len(io.final_submits) == 1 and io.result_ages == pytest.approx([180.65])
     assert io.clicks.count((1000, 700)) == 1
+
+
+def test_unreadable_hunt_returns_to_map_and_watches_same_rally(monkeypatch):
+    io = MockDesktop(monkeypatch)
+    monkeypatch.setattr(MockFrame, "mail", lambda _: None)
+    monkeypatch.setattr(MockFrame, "repair_view", lambda frame: (
+        RepairView((162, 330) if io.now >= 65 else None) if frame.state == "map" else None))
+    assert io.session().wait_battle_end("Captain", 3, 0, 100, repair_already_visible=False) == "repair_icon"
+    assert io.clicks == [(1880, 888), (600, 30)]
+    assert io.final_submits == []
+
+
+def test_mail_click_that_left_clear_map_is_not_replayed_immediately(monkeypatch):
+    io = MockDesktop(monkeypatch)
+    monkeypatch.setattr(io, "click", io.clicks.append)
+    assert io.session().check_victory_mail("Captain", 3, 0, 100) is None
+    assert io.clicks == [(1880, 888)] and io.state == "map"
+
+
+def test_mail_recovery_never_clicks_on_unknown_overlay(monkeypatch):
+    io = MockDesktop(monkeypatch)
+    def click(point):
+        io.clicks.append(point)
+        io.state = "unknown"
+    monkeypatch.setattr(io, "click", click)
+    with pytest.raises(mod.ObservationTimeout, match="邮件的巡猎列表"):
+        io.session().check_victory_mail("Captain", 3, 0, 100)
+    assert io.clicks == [(1880, 888)]
+
+
+def test_mail_recovery_does_not_count_missing_report_as_completion(monkeypatch):
+    io = MockDesktop(monkeypatch)
+    monkeypatch.setattr(MockFrame, "mail", lambda _: None)
+    with pytest.raises(mod.Stop, match="结算超时"):
+        io.session().wait_battle_end("Captain", 3, 0, 100, repair_already_visible=False)
+    assert io.state == "map" and io.final_submits == []
 
 
 def test_detects_captain_before_start_when_not_provided(monkeypatch):

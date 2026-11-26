@@ -4,7 +4,7 @@ from PIL import Image, ImageEnhance
 import pytest
 
 from foundation_assistant.games import get_profile
-from foundation_assistant.tribute_loop import MAIL_FIRST_POLL, Stop, TributeLoop
+from foundation_assistant.tribute_loop import DEFAULT_HUNT_RETRY_MINUTES, MAIL_FIRST_POLL, MAIL_POLL_INTERVAL, Stop, TributeLoop
 from foundation_assistant.tribute_loop_vision import Frame, RepairView, SIZE
 
 
@@ -81,6 +81,47 @@ def test_no_wrench_and_no_new_mail_does_not_start_the_next_round(monkeypatch):
     with pytest.raises(Stop, match="结算超时"):
         loop.wait_battle_end("Captain", 3, 0, 65, repair_already_visible=False)
     assert io.now == pytest.approx(65) and not io.clicked
+
+
+@pytest.mark.parametrize("settings, minutes", [({}, DEFAULT_HUNT_RETRY_MINUTES), ({"hunt_retry_minutes": 2}, 2)])
+def test_unreadable_hunt_uses_retry_interval_then_returns_to_regular_polling(monkeypatch, settings, minutes):
+    io = IO(lambda _: RepairView(None))
+    loop = io.loop()
+    checks, events = [], []
+    answers = iter([None, False, True])
+
+    def check(*_):
+        checks.append(io.now)
+        return next(answers)
+
+    monkeypatch.setattr(loop, "check_victory_mail", check)
+    assert loop.wait_battle_end("Captain", 3, 0, 480, repair_already_visible=False,
+                                emit=lambda kind, **fields: events.append((kind, fields)), **settings) == "victory_mail"
+    assert MAIL_FIRST_POLL <= checks[0] < MAIL_FIRST_POLL + 1
+    assert minutes * 60 <= checks[1] - checks[0] < minutes * 60 + 1
+    assert MAIL_POLL_INTERVAL <= checks[2] - checks[1] < MAIL_POLL_INTERVAL + 1
+    assert events == [("hunt_retry_waiting", {"minutes": minutes})] and not io.clicked
+
+
+@pytest.mark.parametrize("retry, event", [(None, "hunt_retry_disabled"), (5, "hunt_retry_past_deadline")])
+def test_disabled_or_too_late_hunt_retry_only_watches_wrench(monkeypatch, retry, event):
+    io = IO(lambda t: RepairView((145, 327) if t >= 80 else None))
+    loop = io.loop()
+    checks, events = [], []
+    monkeypatch.setattr(loop, "check_victory_mail", lambda *_: checks.append(io.now))
+    assert loop.wait_battle_end("Captain", 3, 0, 90, repair_already_visible=False, hunt_retry_minutes=retry,
+                                emit=lambda kind, **_: events.append(kind)) == "repair_icon"
+    assert len(checks) == 1 and events == [event] and 80 <= io.now < 83 and not io.clicked
+
+
+def test_hunt_retry_does_not_extend_round_deadline(monkeypatch):
+    io = IO(lambda _: RepairView(None))
+    loop = io.loop()
+    checks = []
+    monkeypatch.setattr(loop, "check_victory_mail", lambda *_: checks.append(io.now))
+    with pytest.raises(Stop, match="结算超时"):
+        loop.wait_battle_end("Captain", 3, 0, 70, repair_already_visible=False, hunt_retry_minutes=5)
+    assert len(checks) == 1 and io.now == pytest.approx(70)
 
 
 def test_repair_clicks_only_once_and_requires_return_to_cleared_map():
